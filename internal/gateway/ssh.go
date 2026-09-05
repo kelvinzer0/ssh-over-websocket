@@ -1,22 +1,16 @@
 package gateway
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"net/http"
 	"strconv"
-	"sync"
 	"time"
 
-	"github.com/gorilla/websocket"
+	"github.com/coder/websocket"
 	"golang.org/x/crypto/ssh"
 )
-
-var upgrader = websocket.Upgrader{
-	CheckOrigin: func(r *http.Request) bool {
-		return true // Allow all origins for simplicity, in production this should be restricted
-	},
-}
 
 func handleSSH(w http.ResponseWriter, r *http.Request) {
 	host := r.URL.Query().Get("host")
@@ -33,13 +27,19 @@ func handleSSH(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 1. Upgrade to WebSocket
-	conn, err := upgrader.Upgrade(w, r, nil)
+	// 1. Upgrade to WebSocket (coder/websocket - concurrent-safe, auto ping/pong)
+	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
+		InsecureSkipVerify: true, // allow all origins
+	})
 	if err != nil {
 		log.Printf("WebSocket upgrade failed: %v", err)
 		return
 	}
-	defer conn.Close()
+	defer conn.CloseNow()
+
+	// Root context with cancel - cancels everything when this handler returns
+	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
 
 	// 2. SSH Connection Setup
 	sshConfig := &ssh.ClientConfig{
@@ -54,7 +54,8 @@ func handleSSH(w http.ResponseWriter, r *http.Request) {
 	addr := fmt.Sprintf("%s:%s", host, port)
 	sshClient, err := ssh.Dial("tcp", addr, sshConfig)
 	if err != nil {
-		conn.WriteMessage(websocket.TextMessage, []byte(fmt.Sprintf("\r\nFailed to connect to SSH server: %v\r\n", err)))
+		conn.Write(ctx, websocket.MessageText, []byte(fmt.Sprintf("\r\nFailed to connect to SSH server: %v\r\n", err)))
+		conn.Close(websocket.StatusInternalError, "SSH connection failed")
 		return
 	}
 	defer sshClient.Close()
@@ -62,16 +63,17 @@ func handleSSH(w http.ResponseWriter, r *http.Request) {
 	// 3. Open SSH Session
 	session, err := sshClient.NewSession()
 	if err != nil {
-		conn.WriteMessage(websocket.TextMessage, []byte(fmt.Sprintf("\r\nFailed to create SSH session: %v\r\n", err)))
+		conn.Write(ctx, websocket.MessageText, []byte(fmt.Sprintf("\r\nFailed to create SSH session: %v\r\n", err)))
+		conn.Close(websocket.StatusInternalError, "SSH session failed")
 		return
 	}
 	defer session.Close()
 
 	// Request PTY
 	modes := ssh.TerminalModes{
-		ssh.ECHO:          1,     // enable echoing
-		ssh.TTY_OP_ISPEED: 14400, // input speed = 14.4kbaud
-		ssh.TTY_OP_OSPEED: 14400, // output speed = 14.4kbaud
+		ssh.ECHO:          1,
+		ssh.TTY_OP_ISPEED: 14400,
+		ssh.TTY_OP_OSPEED: 14400,
 	}
 
 	colsStr := r.URL.Query().Get("cols")
@@ -85,8 +87,9 @@ func handleSSH(w http.ResponseWriter, r *http.Request) {
 		rows = 24
 	}
 
-	if err := session.RequestPty("xterm", cols, rows, modes); err != nil {
-		conn.WriteMessage(websocket.TextMessage, []byte(fmt.Sprintf("\r\nFailed to request PTY: %v\r\n", err)))
+	if err := session.RequestPty("xterm-256color", rows, cols, modes); err != nil {
+		conn.Write(ctx, websocket.MessageText, []byte(fmt.Sprintf("\r\nFailed to request PTY: %v\r\n", err)))
+		conn.Close(websocket.StatusInternalError, "PTY failed")
 		return
 	}
 
@@ -103,75 +106,80 @@ func handleSSH(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Start the default login shell (correct approach after RequestPty)
+	// Start the default login shell
 	if err := session.Shell(); err != nil {
-		conn.WriteMessage(websocket.TextMessage, []byte(fmt.Sprintf("\r\nFailed to start shell: %v\r\n", err)))
+		conn.Write(ctx, websocket.MessageText, []byte(fmt.Sprintf("\r\nFailed to start shell: %v\r\n", err)))
+		conn.Close(websocket.StatusInternalError, "Shell failed")
 		return
 	}
 
 	// 4. WebSocket - SSH Bridge
-	var wg sync.WaitGroup
-	wg.Add(2)
+	done := make(chan struct{})
 
-	var writeMutex sync.Mutex
-	writeWs := func(msgType int, data []byte) error {
-		writeMutex.Lock()
-		defer writeMutex.Unlock()
-		return conn.WriteMessage(msgType, data)
-	}
-
-	// Server-side keep-alive (ping every 10 seconds)
-	// to prevent reverse proxy idle timeouts
+	// SSH stdout → WebSocket (binary to support all terminal bytes)
 	go func() {
-		ticker := time.NewTicker(10 * time.Second)
-		defer ticker.Stop()
-		for range ticker.C {
-			if err := writeWs(websocket.PingMessage, nil); err != nil {
-				break
-			}
-		}
-	}()
-
-	go func() {
-		defer wg.Done()
-		buf := make([]byte, 1024)
+		buf := make([]byte, 4096)
 		for {
 			n, err := stdout.Read(buf)
 			if err != nil {
 				break
 			}
-			if err := writeWs(websocket.BinaryMessage, buf[:n]); err != nil {
+			if err := conn.Write(ctx, websocket.MessageBinary, buf[:n]); err != nil {
 				break
 			}
 		}
+		cancel()
 	}()
 
+	// SSH stderr → WebSocket
 	go func() {
-		defer wg.Done()
-		buf := make([]byte, 1024)
+		buf := make([]byte, 4096)
 		for {
 			n, err := stderr.Read(buf)
 			if err != nil {
 				break
 			}
-			if err := writeWs(websocket.BinaryMessage, buf[:n]); err != nil {
+			if err := conn.Write(ctx, websocket.MessageBinary, buf[:n]); err != nil {
 				break
 			}
 		}
 	}()
 
+	// WebSocket → SSH stdin
 	go func() {
+		defer close(done)
 		for {
-			messageType, p, err := conn.ReadMessage()
+			_, p, err := conn.Read(ctx)
 			if err != nil {
 				break
 			}
-			if messageType == websocket.TextMessage {
-				stdin.Write(p)
+			if _, err := stdin.Write(p); err != nil {
+				break
 			}
 		}
 		session.Close()
 	}()
 
-	wg.Wait()
+	// Keep-alive: ping every 20s, coder/websocket handles pong automatically
+	go func() {
+		ticker := time.NewTicker(20 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				pingCtx, pingCancel := context.WithTimeout(ctx, 10*time.Second)
+				err := conn.Ping(pingCtx)
+				pingCancel()
+				if err != nil {
+					cancel()
+					return
+				}
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
+	<-done
+	conn.Close(websocket.StatusNormalClosure, "SSH session ended")
 }

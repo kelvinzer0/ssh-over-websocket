@@ -5,22 +5,31 @@
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css" />
     <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js"></script>
     <style>
-        body { margin: 0; padding: 20px; font-family: sans-serif; background: #f0f0f0; }
-        #form-container { margin-bottom: 20px; background: white; padding: 15px; border-radius: 5px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
-        #terminal-container { width: 800px; height: 400px; background: #000; padding: 10px; border-radius: 5px; }
-        input { padding: 8px; margin-right: 10px; border: 1px solid #ccc; border-radius: 4px; }
-        button { padding: 8px 15px; background: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; }
-        button:hover { background: #0056b3; }
+        * { box-sizing: border-box; }
+        body { margin: 0; padding: 20px; font-family: sans-serif; background: #1e1e2e; color: #cdd6f4; }
+        #form-container { margin-bottom: 16px; background: #313244; padding: 15px; border-radius: 8px; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+        #terminal-container { background: #000; padding: 10px; border-radius: 8px; border: 1px solid #45475a; }
+        input { padding: 8px 12px; border: 1px solid #45475a; border-radius: 6px; background: #1e1e2e; color: #cdd6f4; font-size: 14px; width: 160px; }
+        input::placeholder { color: #6c7086; }
+        input[size="4"] { width: 64px; }
+        button { padding: 8px 18px; background: #89b4fa; color: #1e1e2e; border: none; border-radius: 6px; cursor: pointer; font-weight: bold; font-size: 14px; transition: background 0.2s; }
+        button:hover { background: #74c7ec; }
+        #status { font-size: 13px; margin-left: auto; padding: 4px 10px; border-radius: 12px; background: #45475a; }
+        #status.connected { background: #a6e3a1; color: #1e1e2e; }
+        #status.disconnected { background: #f38ba8; color: #1e1e2e; }
+        #status.reconnecting { background: #fab387; color: #1e1e2e; }
     </style>
 </head>
 <body>
 
     <div id="form-container">
-        <input type="text" id="host" placeholder="Host (e.g. 127.0.0.1)" value="127.0.0.1">
+        <input type="text" id="host" placeholder="Host" value="127.0.0.1">
         <input type="text" id="port" placeholder="Port" value="22" size="4">
         <input type="text" id="user" placeholder="Username" value="user">
         <input type="password" id="pass" placeholder="Password">
-        <button onclick="connect()">Connect SSH</button>
+        <button id="connectBtn" onclick="startConnect()">Connect SSH</button>
+        <button onclick="disconnect()" style="background:#f38ba8;">Disconnect</button>
+        <span id="status">Disconnected</span>
     </div>
 
     <div id="terminal-container"></div>
@@ -28,46 +37,81 @@
     <script>
         var term = new Terminal({
             cursorBlink: true,
-            cols: 80,
-            rows: 24
+            cols: 220,
+            rows: 50,
+            theme: {
+                background: '#000000',
+                foreground: '#cdd6f4',
+                cursor: '#f5e0dc',
+            }
         });
         term.open(document.getElementById('terminal-container'));
         term.write('Welcome to SSH over WebSocket.\r\nEnter credentials and click Connect.\r\n');
 
         var ws;
+        var wsUrl;
+        var reconnectTimer;
+        var reconnectDelay = 1000;  // start at 1s
+        var maxReconnectDelay = 30000; // max 30s
+        var shouldReconnect = false;
+        var manualDisconnect = false;
 
-        function connect() {
+        function setStatus(state, text) {
+            var el = document.getElementById('status');
+            el.textContent = text;
+            el.className = state;
+        }
+
+        function buildWsUrl() {
             var host = document.getElementById('host').value;
             var port = document.getElementById('port').value;
             var user = document.getElementById('user').value;
             var pass = document.getElementById('pass').value;
+            var protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            return protocol + '//' + window.location.host + '/ssh' +
+                '?host=' + encodeURIComponent(host) +
+                '&port=' + encodeURIComponent(port) +
+                '&user=' + encodeURIComponent(user) +
+                '&pass=' + encodeURIComponent(pass) +
+                '&cols=' + term.cols +
+                '&rows=' + term.rows;
+        }
 
+        function startConnect() {
+            var host = document.getElementById('host').value;
+            var user = document.getElementById('user').value;
+            var pass = document.getElementById('pass').value;
             if (!host || !user || !pass) {
-                alert("Please fill in host, user, and pass.");
+                alert('Please fill in host, user, and pass.');
                 return;
             }
 
+            manualDisconnect = false;
+            shouldReconnect = true;
+            reconnectDelay = 1000;
+            clearTimeout(reconnectTimer);
+
+            term.clear();
+            connectWs();
+        }
+
+        function connectWs() {
             if (ws) {
+                ws.onclose = null; // prevent auto-reconnect trigger on manual close
                 ws.close();
             }
 
-            term.clear();
-            term.write('Connecting...\r\n');
-
-            var protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-            var wsUrl = protocol + '//' + window.location.host + '/ssh?host=' + encodeURIComponent(host) + 
-                        '&port=' + encodeURIComponent(port) + 
-                        '&user=' + encodeURIComponent(user) + 
-                        '&pass=' + encodeURIComponent(pass) + 
-                        '&cols=' + term.cols + 
-                        '&rows=' + term.rows;
+            wsUrl = buildWsUrl();
+            term.write('\r\nConnecting...\r\n');
+            setStatus('reconnecting', 'Connecting...');
 
             ws = new WebSocket(wsUrl);
-
             ws.binaryType = 'arraybuffer';
 
             ws.onopen = function() {
-                term.write('\r\nConnected to WebSocket.\r\n');
+                reconnectDelay = 1000; // reset backoff on success
+                setStatus('connected', 'Connected ✓');
+                term.write('\r\n\x1b[32mConnected!\x1b[0m\r\n');
             };
 
             ws.onmessage = function(event) {
@@ -78,12 +122,22 @@
                 }
             };
 
-            ws.onclose = function() {
-                term.write('\r\nConnection closed.\r\n');
+            ws.onclose = function(event) {
+                setStatus('disconnected', 'Disconnected');
+                if (!manualDisconnect && shouldReconnect) {
+                    term.write('\r\n\x1b[33mConnection lost. Reconnecting in ' + (reconnectDelay / 1000) + 's...\x1b[0m\r\n');
+                    setStatus('reconnecting', 'Reconnecting in ' + (reconnectDelay / 1000) + 's...');
+                    reconnectTimer = setTimeout(function() {
+                        reconnectDelay = Math.min(reconnectDelay * 2, maxReconnectDelay);
+                        connectWs();
+                    }, reconnectDelay);
+                } else {
+                    term.write('\r\n\x1b[31mConnection closed.\x1b[0m\r\n');
+                }
             };
 
-            ws.onerror = function(error) {
-                term.write('\r\nWebSocket error occurred.\r\n');
+            ws.onerror = function() {
+                // onclose will handle retry
             };
 
             term.onData(function(data) {
@@ -91,6 +145,14 @@
                     ws.send(data);
                 }
             });
+        }
+
+        function disconnect() {
+            manualDisconnect = true;
+            shouldReconnect = false;
+            clearTimeout(reconnectTimer);
+            if (ws) ws.close();
+            setStatus('disconnected', 'Disconnected');
         }
     </script>
 </body>
