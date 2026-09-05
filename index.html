@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>SSH over WebSocket</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css" />
+    <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js"></script>
+    <style>
+        body { margin: 0; padding: 20px; font-family: sans-serif; background: #f0f0f0; }
+        #form-container { margin-bottom: 20px; background: white; padding: 15px; border-radius: 5px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+        #terminal-container { width: 800px; height: 400px; background: #000; padding: 10px; border-radius: 5px; }
+        input { padding: 8px; margin-right: 10px; border: 1px solid #ccc; border-radius: 4px; }
+        button { padding: 8px 15px; background: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; }
+        button:hover { background: #0056b3; }
+    </style>
+</head>
+<body>
+
+    <div id="form-container">
+        <input type="text" id="host" placeholder="Host (e.g. 127.0.0.1)" value="127.0.0.1">
+        <input type="text" id="port" placeholder="Port" value="22" size="4">
+        <input type="text" id="user" placeholder="Username" value="user">
+        <input type="password" id="pass" placeholder="Password">
+        <button onclick="connect()">Connect SSH</button>
+    </div>
+
+    <div id="terminal-container"></div>
+
+    <script>
+        var term = new Terminal({
+            cursorBlink: true,
+            cols: 80,
+            rows: 24
+        });
+        term.open(document.getElementById('terminal-container'));
+        term.write('Welcome to SSH over WebSocket.\r\nEnter credentials and click Connect.\r\n');
+
+        var ws;
+
+        function connect() {
+            var host = document.getElementById('host').value;
+            var port = document.getElementById('port').value;
+            var user = document.getElementById('user').value;
+            var pass = document.getElementById('pass').value;
+
+            if (!host || !user || !pass) {
+                alert("Please fill in host, user, and pass.");
+                return;
+            }
+
+            if (ws) {
+                ws.close();
+            }
+
+            term.clear();
+            term.write('Connecting...\r\n');
+
+            var protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            var wsUrl = protocol + '//' + window.location.host + '/ssh?host=' + encodeURIComponent(host) + 
+                        '&port=' + encodeURIComponent(port) + 
+                        '&user=' + encodeURIComponent(user) + 
+                        '&pass=' + encodeURIComponent(pass) + 
+                        '&cols=' + term.cols + 
+                        '&rows=' + term.rows;
+
+            ws = new WebSocket(wsUrl);
+
+            ws.onopen = function() {
+                term.write('\r\nConnected to WebSocket.\r\n');
+            };
+
+            ws.onmessage = function(event) {
+                term.write(event.data);
+            };
+
+            ws.onclose = function() {
+                term.write('\r\nConnection closed.\r\n');
+            };
+
+            ws.onerror = function(error) {
+                term.write('\r\nWebSocket error occurred.\r\n');
+            };
+
+            term.onData(function(data) {
+                if (ws && ws.readyState === WebSocket.OPEN) {
+                    ws.send(data);
+                }
+            });
+        }
+    </script>
+</body>
+</html>
