@@ -115,6 +115,25 @@ func handleSSH(w http.ResponseWriter, r *http.Request) {
 	var wg sync.WaitGroup
 	wg.Add(2)
 
+	var writeMutex sync.Mutex
+	writeWs := func(msgType int, data []byte) error {
+		writeMutex.Lock()
+		defer writeMutex.Unlock()
+		return conn.WriteMessage(msgType, data)
+	}
+
+	// Server-side keep-alive (ping every 10 seconds)
+	// to prevent reverse proxy idle timeouts
+	go func() {
+		ticker := time.NewTicker(10 * time.Second)
+		defer ticker.Stop()
+		for range ticker.C {
+			if err := writeWs(websocket.PingMessage, nil); err != nil {
+				break
+			}
+		}
+	}()
+
 	go func() {
 		defer wg.Done()
 		buf := make([]byte, 1024)
@@ -123,7 +142,9 @@ func handleSSH(w http.ResponseWriter, r *http.Request) {
 			if err != nil {
 				break
 			}
-			conn.WriteMessage(websocket.TextMessage, buf[:n])
+			if err := writeWs(websocket.TextMessage, buf[:n]); err != nil {
+				break
+			}
 		}
 	}()
 
@@ -135,7 +156,9 @@ func handleSSH(w http.ResponseWriter, r *http.Request) {
 			if err != nil {
 				break
 			}
-			conn.WriteMessage(websocket.TextMessage, buf[:n])
+			if err := writeWs(websocket.TextMessage, buf[:n]); err != nil {
+				break
+			}
 		}
 	}()
 
