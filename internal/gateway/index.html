@@ -64,12 +64,18 @@
 
             ws = new WebSocket(wsUrl);
 
+            ws.binaryType = 'arraybuffer';
+
             ws.onopen = function() {
                 term.write('\r\nConnected to WebSocket.\r\n');
             };
 
             ws.onmessage = function(event) {
-                term.write(event.data);
+                if (event.data instanceof ArrayBuffer) {
+                    term.write(new Uint8Array(event.data));
+                } else {
+                    term.write(event.data);
+                }
             };
 
             ws.onclose = function() {

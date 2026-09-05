@@ -140,7 +140,7 @@ func handleSSH(w http.ResponseWriter, r *http.Request) {
 			if err != nil {
 				break
 			}
-			if err := writeWs(websocket.TextMessage, buf[:n]); err != nil {
+			if err := writeWs(websocket.BinaryMessage, buf[:n]); err != nil {
 				break
 			}
 		}
@@ -154,7 +154,7 @@ func handleSSH(w http.ResponseWriter, r *http.Request) {
 			if err != nil {
 				break
 			}
-			if err := writeWs(websocket.TextMessage, buf[:n]); err != nil {
+			if err := writeWs(websocket.BinaryMessage, buf[:n]); err != nil {
 				break
 			}
 		}
