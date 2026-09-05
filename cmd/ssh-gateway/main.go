@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"log"
 
-	"ssh-over-websocket/internal/gateway"
-	"ssh-over-websocket/internal/systemd"
+	"github.com/kelvinzer0/ssh-over-websocket/internal/gateway"
+	"github.com/kelvinzer0/ssh-over-websocket/internal/systemd"
 )
 
 func main() {

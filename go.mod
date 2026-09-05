@@ -1,4 +1,4 @@
-module ssh-over-websocket
+module github.com/kelvinzer0/ssh-over-websocket
 
 go 1.22.4
 
