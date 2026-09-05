@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"strconv"
@@ -15,18 +14,36 @@ import (
 
 var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool {
-		return true
+		return true // Allow all origins for simplicity, in production this should be restricted
 	},
 }
 
-func main() {
-	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		http.ServeFile(w, r, "index.html")
-	})
-	http.HandleFunc("/ssh", handleSSH)
+// GatewayServer holds dependencies for the gateway
+type GatewayServer struct {
+	addr string
+}
 
-	log.Println("Server listening on :8080")
-	if err := http.ListenAndServe(":8080", nil); err != nil {
+// NewGatewayServer creates a new server instance
+func NewGatewayServer(addr string) *GatewayServer {
+	return &GatewayServer{addr: addr}
+}
+
+func (s *GatewayServer) Run() error {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", s.handleIndex)
+	mux.HandleFunc("/ssh", handleSSH)
+
+	log.Printf("Server listening on %s", s.addr)
+	return http.ListenAndServe(s.addr, mux)
+}
+
+func (s *GatewayServer) handleIndex(w http.ResponseWriter, r *http.Request) {
+	http.ServeFile(w, r, "index.html")
+}
+
+func main() {
+	server := NewGatewayServer(":8080")
+	if err := server.Run(); err != nil {
 		log.Fatal(err)
 	}
 }

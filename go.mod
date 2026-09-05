@@ -1,10 +1,10 @@
 module ssh-over-websocket
 
-go 1.26.0
+go 1.22.4
+
+require github.com/gorilla/websocket v1.5.3
 
 require (
-	github.com/gorilla/websocket v1.5.3
-	golang.org/x/crypto v0.56.0
+	golang.org/x/crypto v0.22.0
+	golang.org/x/sys v0.19.0 // indirect
 )
-
-require golang.org/x/sys v0.47.0 // indirect
