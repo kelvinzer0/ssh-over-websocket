@@ -1,9 +1,13 @@
 package main
 
 import (
+	"embed"
+	"flag"
 	"fmt"
 	"log"
 	"net/http"
+	"os"
+	"os/exec"
 	"strconv"
 	"sync"
 	"time"
@@ -11,6 +15,9 @@ import (
 	"github.com/gorilla/websocket"
 	"golang.org/x/crypto/ssh"
 )
+
+//go:embed index.html
+var staticFiles embed.FS
 
 var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool {
@@ -38,14 +45,13 @@ func (s *GatewayServer) Run() error {
 }
 
 func (s *GatewayServer) handleIndex(w http.ResponseWriter, r *http.Request) {
-	http.ServeFile(w, r, "index.html")
-}
-
-func main() {
-	server := NewGatewayServer(":8080")
-	if err := server.Run(); err != nil {
-		log.Fatal(err)
+	content, err := staticFiles.ReadFile("index.html")
+	if err != nil {
+		http.Error(w, "Could not read index.html", http.StatusInternalServerError)
+		return
 	}
+	w.Header().Set("Content-Type", "text/html")
+	w.Write(content)
 }
 
 func handleSSH(w http.ResponseWriter, r *http.Request) {
@@ -145,7 +151,6 @@ func handleSSH(w http.ResponseWriter, r *http.Request) {
 	var wg sync.WaitGroup
 	wg.Add(2)
 
-	// Copy from SSH stdout/stderr to WebSocket
 	go func() {
 		defer wg.Done()
 		buf := make([]byte, 1024)
@@ -170,7 +175,6 @@ func handleSSH(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	// Copy from WebSocket to SSH stdin
 	go func() {
 		for {
 			messageType, p, err := conn.ReadMessage()
@@ -181,8 +185,65 @@ func handleSSH(w http.ResponseWriter, r *http.Request) {
 				stdin.Write(p)
 			}
 		}
-		session.Close() // Close session if websocket disconnects
+		session.Close()
 	}()
 
 	wg.Wait()
+}
+
+func installService(bindAddr string) error {
+	exePath, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("could not determine executable path: %v", err)
+	}
+
+	serviceContent := fmt.Sprintf(`[Unit]
+Description=SSH over WebSocket Gateway
+After=network.target
+
+[Service]
+ExecStart=%s -bind %s
+Restart=always
+User=root
+
+[Install]
+WantedBy=multi-user.target
+`, exePath, bindAddr)
+
+	servicePath := "/etc/systemd/system/ssh-gateway.service"
+	err = os.WriteFile(servicePath, []byte(serviceContent), 0644)
+	if err != nil {
+		return fmt.Errorf("failed to write systemd service file: %v", err)
+	}
+
+	fmt.Println("Reloading systemd daemon...")
+	if err := exec.Command("systemctl", "daemon-reload").Run(); err != nil {
+		return fmt.Errorf("failed to reload daemon: %v", err)
+	}
+
+	fmt.Println("Enabling and starting ssh-gateway service...")
+	if err := exec.Command("systemctl", "enable", "--now", "ssh-gateway").Run(); err != nil {
+		return fmt.Errorf("failed to enable service: %v", err)
+	}
+
+	return nil
+}
+
+func main() {
+	bind := flag.String("bind", ":8080", "Bind address (e.g., 127.0.0.1:8080 or :8080)")
+	install := flag.Bool("install", false, "Install as a Linux systemd service")
+	flag.Parse()
+
+	if *install {
+		if err := installService(*bind); err != nil {
+			log.Fatalf("Install failed (make sure you run as root): %v", err)
+		}
+		fmt.Println("Service installed and started successfully. You can check status with: systemctl status ssh-gateway")
+		return
+	}
+
+	server := NewGatewayServer(*bind)
+	if err := server.Run(); err != nil {
+		log.Fatal(err)
+	}
 }
