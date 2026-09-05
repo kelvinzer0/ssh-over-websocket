@@ -3,9 +3,11 @@ package gateway
 import (
 	"context"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/coder/websocket"
@@ -27,17 +29,19 @@ func handleSSH(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 1. Upgrade to WebSocket (coder/websocket - concurrent-safe, auto ping/pong)
+	log.Printf("[ws] new connection from %s → %s@%s:%s", r.RemoteAddr, user, host, port)
+
+	// 1. Upgrade to WebSocket
 	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
-		InsecureSkipVerify: true, // allow all origins
+		InsecureSkipVerify: true,
 	})
 	if err != nil {
-		log.Printf("WebSocket upgrade failed: %v", err)
+		log.Printf("[ws] upgrade failed: %v", err)
 		return
 	}
 	defer conn.CloseNow()
 
-	// Root context with cancel - cancels everything when this handler returns
+	// Root context with cancel — cancels everything when this handler returns
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 
@@ -48,21 +52,24 @@ func handleSSH(w http.ResponseWriter, r *http.Request) {
 			ssh.Password(pass),
 		},
 		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
-		Timeout:         10 * time.Second,
+		Timeout:         15 * time.Second,
 	}
 
 	addr := fmt.Sprintf("%s:%s", host, port)
 	sshClient, err := ssh.Dial("tcp", addr, sshConfig)
 	if err != nil {
+		log.Printf("[ssh] dial %s failed: %v", addr, err)
 		conn.Write(ctx, websocket.MessageText, []byte(fmt.Sprintf("\r\nFailed to connect to SSH server: %v\r\n", err)))
 		conn.Close(websocket.StatusInternalError, "SSH connection failed")
 		return
 	}
 	defer sshClient.Close()
+	log.Printf("[ssh] connected to %s", addr)
 
 	// 3. Open SSH Session
 	session, err := sshClient.NewSession()
 	if err != nil {
+		log.Printf("[ssh] session failed: %v", err)
 		conn.Write(ctx, websocket.MessageText, []byte(fmt.Sprintf("\r\nFailed to create SSH session: %v\r\n", err)))
 		conn.Close(websocket.StatusInternalError, "SSH session failed")
 		return
@@ -113,56 +120,80 @@ func handleSSH(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 4. WebSocket - SSH Bridge
+	// 4. WebSocket ↔ SSH Bridge
+	// Use sync.WaitGroup to track all bridge goroutines
+	var wg sync.WaitGroup
 	done := make(chan struct{})
 
+	// Helper: close SSH session when any bridge goroutine exits
+	closeSession := sync.OnceFunc(func() {
+		log.Printf("[bridge] closing SSH session for %s@%s", user, host)
+		session.Close()
+		cancel()
+	})
+
 	// SSH stdout → WebSocket (binary to support all terminal bytes)
+	wg.Add(1)
 	go func() {
+		defer wg.Done()
+		defer closeSession()
 		buf := make([]byte, 4096)
 		for {
 			n, err := stdout.Read(buf)
 			if err != nil {
-				break
+				if err != io.EOF {
+					log.Printf("[ssh] stdout read error: %v", err)
+				}
+				return
 			}
 			if err := conn.Write(ctx, websocket.MessageBinary, buf[:n]); err != nil {
-				break
+				log.Printf("[ws] write error (stdout): %v", err)
+				return
 			}
 		}
-		cancel()
 	}()
 
 	// SSH stderr → WebSocket
+	wg.Add(1)
 	go func() {
+		defer wg.Done()
 		buf := make([]byte, 4096)
 		for {
 			n, err := stderr.Read(buf)
 			if err != nil {
-				break
+				return
 			}
 			if err := conn.Write(ctx, websocket.MessageBinary, buf[:n]); err != nil {
-				break
+				return
 			}
 		}
 	}()
 
 	// WebSocket → SSH stdin
+	wg.Add(1)
 	go func() {
+		defer wg.Done()
+		defer closeSession()
 		defer close(done)
 		for {
 			_, p, err := conn.Read(ctx)
 			if err != nil {
-				break
+				log.Printf("[ws] read error: %v", err)
+				return
 			}
 			if _, err := stdin.Write(p); err != nil {
-				break
+				log.Printf("[ssh] stdin write error: %v", err)
+				return
 			}
 		}
-		session.Close()
 	}()
 
-	// Keep-alive: ping every 20s, coder/websocket handles pong automatically
+	// Keep-alive: ping every 15s, auto-recover on pong timeout
+	wg.Add(1)
 	go func() {
-		ticker := time.NewTicker(20 * time.Second)
+		defer wg.Done()
+		defer cancel()
+		ticker := time.NewTicker(15 * time.Second)
 		defer ticker.Stop()
 		for {
 			select {
@@ -171,7 +202,7 @@ func handleSSH(w http.ResponseWriter, r *http.Request) {
 				err := conn.Ping(pingCtx)
 				pingCancel()
 				if err != nil {
-					cancel()
+					log.Printf("[ws] ping failed: %v", err)
 					return
 				}
 			case <-ctx.Done():
@@ -180,6 +211,11 @@ func handleSSH(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
+	// Wait for the read-side to finish (WebSocket→stdin closes done)
 	<-done
+
+	// Wait for all bridge goroutines to drain before closing WebSocket
+	wg.Wait()
+	log.Printf("[bridge] session ended for %s@%s", user, host)
 	conn.Close(websocket.StatusNormalClosure, "SSH session ended")
 }

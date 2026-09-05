@@ -55,6 +55,8 @@
         var maxReconnectDelay = 30000; // max 30s
         var shouldReconnect = false;
         var manualDisconnect = false;
+        var retryCount = 0;
+        var maxRetries = 10;
 
         function setStatus(state, text) {
             var el = document.getElementById('status');
@@ -89,6 +91,7 @@
             manualDisconnect = false;
             shouldReconnect = true;
             reconnectDelay = 1000;
+            retryCount = 0;
             clearTimeout(reconnectTimer);
 
             term.clear();
@@ -110,6 +113,7 @@
 
             ws.onopen = function() {
                 reconnectDelay = 1000; // reset backoff on success
+                retryCount = 0;
                 setStatus('connected', 'Connected ✓');
                 term.write('\r\n\x1b[32mConnected!\x1b[0m\r\n');
             };
@@ -124,16 +128,24 @@
 
             ws.onclose = function(event) {
                 setStatus('disconnected', 'Disconnected');
-                if (!manualDisconnect && shouldReconnect) {
-                    term.write('\r\n\x1b[33mConnection lost. Reconnecting in ' + (reconnectDelay / 1000) + 's...\x1b[0m\r\n');
-                    setStatus('reconnecting', 'Reconnecting in ' + (reconnectDelay / 1000) + 's...');
-                    reconnectTimer = setTimeout(function() {
-                        reconnectDelay = Math.min(reconnectDelay * 2, maxReconnectDelay);
-                        connectWs();
-                    }, reconnectDelay);
-                } else {
+                // Don't reconnect on clean close (1000) or manual disconnect
+                if (event.code === 1000 || manualDisconnect || !shouldReconnect) {
                     term.write('\r\n\x1b[31mConnection closed.\x1b[0m\r\n');
+                    return;
                 }
+                // Cap retries to avoid infinite reconnect storms
+                if (retryCount >= maxRetries) {
+                    term.write('\r\n\x1b[31mConnection closed. Max reconnect attempts reached (' + maxRetries + '). Click Connect to try again.\x1b[0m\r\n');
+                    shouldReconnect = false;
+                    return;
+                }
+                retryCount++;
+                term.write('\r\n\x1b[33mConnection lost (code: ' + event.code + '). Reconnecting in ' + (reconnectDelay / 1000) + 's... (attempt ' + retryCount + '/' + maxRetries + ')\x1b[0m\r\n');
+                setStatus('reconnecting', 'Reconnecting in ' + (reconnectDelay / 1000) + 's...');
+                reconnectTimer = setTimeout(function() {
+                    reconnectDelay = Math.min(reconnectDelay * 2, maxReconnectDelay);
+                    connectWs();
+                }, reconnectDelay);
             };
 
             ws.onerror = function() {
