@@ -103,12 +103,10 @@ func handleSSH(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := session.Start("bash"); err != nil {
-		// Fallback to default shell if bash fails
-		if err := session.Shell(); err != nil {
-			conn.WriteMessage(websocket.TextMessage, []byte(fmt.Sprintf("\r\nFailed to start shell: %v\r\n", err)))
-			return
-		}
+	// Start the default login shell (correct approach after RequestPty)
+	if err := session.Shell(); err != nil {
+		conn.WriteMessage(websocket.TextMessage, []byte(fmt.Sprintf("\r\nFailed to start shell: %v\r\n", err)))
+		return
 	}
 
 	// 4. WebSocket - SSH Bridge
