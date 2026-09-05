@@ -7,10 +7,15 @@ import (
 )
 
 // InstallService installs the application as a systemd service on Linux
-func InstallService(bindAddr string) error {
+func InstallService(bindAddr, certFile, keyFile string) error {
 	exePath, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("could not determine executable path: %v", err)
+	}
+
+	execArgs := fmt.Sprintf("-bind %s", bindAddr)
+	if certFile != "" && keyFile != "" {
+		execArgs += fmt.Sprintf(" -cert %s -key %s", certFile, keyFile)
 	}
 
 	serviceContent := fmt.Sprintf(`[Unit]
@@ -18,13 +23,13 @@ Description=SSH over WebSocket Gateway
 After=network.target
 
 [Service]
-ExecStart=%s -bind %s
+ExecStart=%s %s
 Restart=always
 User=root
 
 [Install]
 WantedBy=multi-user.target
-`, exePath, bindAddr)
+`, exePath, execArgs)
 
 	servicePath := "/etc/systemd/system/ssh-gateway.service"
 	err = os.WriteFile(servicePath, []byte(serviceContent), 0644)

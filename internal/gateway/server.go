@@ -11,21 +11,28 @@ var staticFiles embed.FS
 
 // Server holds dependencies for the gateway
 type Server struct {
-	addr string
+	addr     string
+	certFile string
+	keyFile  string
 }
 
 // NewServer creates a new server instance
-func NewServer(addr string) *Server {
-	return &Server{addr: addr}
+func NewServer(addr, certFile, keyFile string) *Server {
+	return &Server{addr: addr, certFile: certFile, keyFile: keyFile}
 }
 
-// Run starts the HTTP server
+// Run starts the HTTP(S) server
 func (s *Server) Run() error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", s.handleIndex)
 	mux.HandleFunc("/ssh", handleSSH)
 
-	log.Printf("Server listening on %s", s.addr)
+	if s.certFile != "" && s.keyFile != "" {
+		log.Printf("Server listening on HTTPS %s", s.addr)
+		return http.ListenAndServeTLS(s.addr, s.certFile, s.keyFile, mux)
+	}
+
+	log.Printf("Server listening on HTTP %s", s.addr)
 	return http.ListenAndServe(s.addr, mux)
 }
 

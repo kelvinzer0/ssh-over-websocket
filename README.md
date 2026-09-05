@@ -71,12 +71,20 @@ Open your browser and navigate to `http://localhost:9090`.
 
 Click **Connect SSH** and your terminal session will start within the browser.
 
+### Running with HTTPS / SSL
+
+To run the server securely over HTTPS, simply provide the path to your SSL certificate and key files:
+```bash
+ssh-over-websocket -bind 0.0.0.0:443 -cert /path/to/cert.pem -key /path/to/key.pem
+```
+The server will automatically switch from HTTP to HTTPS when both flags are provided.
+
 ### Auto Setup Linux Service (Systemd)
 
-You can automatically configure the gateway to run as a background service on Linux. Run the binary as root with the `-install` flag. You can also combine it with the `-bind` flag to set the default service address.
+You can automatically configure the gateway to run as a background service on Linux. Run the binary as root with the `-install` flag. You can also combine it with the `-bind`, `-cert`, and `-key` flags to set the default service configuration.
 
 ```bash
-sudo ./ssh-gateway -install -bind 0.0.0.0:8080
+sudo ssh-gateway -install -bind 0.0.0.0:443 -cert /etc/ssl/cert.pem -key /etc/ssl/key.pem
 ```
 This command will create a systemd service (`/etc/systemd/system/ssh-gateway.service`), reload the daemon, and enable the service to start automatically on boot.
 
