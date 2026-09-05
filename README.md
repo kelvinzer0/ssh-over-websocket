@@ -34,17 +34,22 @@ A simple, lightweight gateway to bridge SSH connections over WebSockets, complet
 
 ### Installation
 
-**Option 1: Using `go install`**
-If you have Go installed, you can directly install it globally (the `index.html` UI is bundled inside the binary):
+**Option 1: Quick Install via Curl**
+You can install the latest version directly using our installation script (requires Go):
 ```bash
-go install github.com/kelvinzer0/ssh-over-websocket@latest
+curl -sSL https://raw.githubusercontent.com/kelvinzer0/ssh-over-websocket/master/install.sh | bash
 ```
 
-**Option 2: Build from Source**
+**Option 2: Using `go install`**
+```bash
+go install github.com/kelvinzer0/ssh-over-websocket/cmd/ssh-gateway@latest
+```
+
+**Option 3: Build from Source**
 ```bash
 git clone https://github.com/kelvinzer0/ssh-over-websocket.git
 cd ssh-over-websocket
-go build -o ssh-gateway main.go
+go build -o ssh-gateway ./cmd/ssh-gateway
 ```
 
 ### Usage
