@@ -36,7 +36,7 @@ func handleSSH(w http.ResponseWriter, r *http.Request) {
 	port := r.URL.Query().Get("port")
 	user := r.URL.Query().Get("user")
 	pass := r.URL.Query().Get("pass")
-	
+
 	if port == "" {
 		port = "22"
 	}
@@ -86,13 +86,17 @@ func handleSSH(w http.ResponseWriter, r *http.Request) {
 		ssh.TTY_OP_ISPEED: 14400, // input speed = 14.4kbaud
 		ssh.TTY_OP_OSPEED: 14400, // output speed = 14.4kbaud
 	}
-	
+
 	colsStr := r.URL.Query().Get("cols")
 	rowsStr := r.URL.Query().Get("rows")
 	cols, _ := strconv.Atoi(colsStr)
 	rows, _ := strconv.Atoi(rowsStr)
-	if cols == 0 { cols = 80 }
-	if rows == 0 { rows = 24 }
+	if cols == 0 {
+		cols = 80
+	}
+	if rows == 0 {
+		rows = 24
+	}
 
 	if err := session.RequestPty("xterm", cols, rows, modes); err != nil {
 		conn.WriteMessage(websocket.TextMessage, []byte(fmt.Sprintf("\r\nFailed to request PTY: %v\r\n", err)))
