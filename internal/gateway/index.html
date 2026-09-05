@@ -51,12 +51,13 @@
         var ws;
         var wsUrl;
         var reconnectTimer;
+        var keepaliveTimer;
         var reconnectDelay = 1000;  // start at 1s
         var maxReconnectDelay = 30000; // max 30s
         var shouldReconnect = false;
         var manualDisconnect = false;
         var retryCount = 0;
-        var maxRetries = 10;
+        var maxRetries = 30;
 
         function setStatus(state, text) {
             var el = document.getElementById('status');
@@ -116,6 +117,14 @@
                 retryCount = 0;
                 setStatus('connected', 'Connected ✓');
                 term.write('\r\n\x1b[32mConnected!\x1b[0m\r\n');
+                // Start Cloudflare-bypass keepalive: send real data frame every 30s
+                // CF Free ignores WebSocket ping/pong, only data frames reset idle timer
+                clearInterval(keepaliveTimer);
+                keepaliveTimer = setInterval(function() {
+                    if (ws && ws.readyState === WebSocket.OPEN) {
+                        ws.send(new Uint8Array([0x00])); // NOP byte, ignored by SSH
+                    }
+                }, 30000);
             };
 
             ws.onmessage = function(event) {
@@ -127,6 +136,7 @@
             };
 
             ws.onclose = function(event) {
+                clearInterval(keepaliveTimer);
                 setStatus('disconnected', 'Disconnected');
                 // Don't reconnect on clean close (1000) or manual disconnect
                 if (event.code === 1000 || manualDisconnect || !shouldReconnect) {
@@ -140,12 +150,17 @@
                     return;
                 }
                 retryCount++;
-                term.write('\r\n\x1b[33mConnection lost (code: ' + event.code + '). Reconnecting in ' + (reconnectDelay / 1000) + 's... (attempt ' + retryCount + '/' + maxRetries + ')\x1b[0m\r\n');
-                setStatus('reconnecting', 'Reconnecting in ' + (reconnectDelay / 1000) + 's...');
+                // Code 1006 = CF/proxy idle timeout → reconnect fast (1s)
+                // Other codes = real network issue → exponential backoff
+                var delay = (event.code === 1006) ? 1000 : reconnectDelay;
+                term.write('\r\n\x1b[33mConnection lost (code: ' + event.code + '). Reconnecting in ' + (delay / 1000) + 's... (attempt ' + retryCount + '/' + maxRetries + ')\x1b[0m\r\n');
+                setStatus('reconnecting', 'Reconnecting in ' + (delay / 1000) + 's...');
                 reconnectTimer = setTimeout(function() {
-                    reconnectDelay = Math.min(reconnectDelay * 2, maxReconnectDelay);
+                    if (event.code !== 1006) {
+                        reconnectDelay = Math.min(reconnectDelay * 2, maxReconnectDelay);
+                    }
                     connectWs();
-                }, reconnectDelay);
+                }, delay);
             };
 
             ws.onerror = function() {
@@ -163,6 +178,7 @@
             manualDisconnect = true;
             shouldReconnect = false;
             clearTimeout(reconnectTimer);
+            clearInterval(keepaliveTimer);
             if (ws) ws.close();
             setStatus('disconnected', 'Disconnected');
         }
